@@ -36,6 +36,11 @@ void printSpot(Pos spot, Game *game) {
     attroff(COLOR_PAIR(COLOR(spot.file,spot.rank)));
 }
 
+void printCap(char color, char row, char spot, Game *game) {
+    static char *reps = REPS;
+    mvprintw(spot, (color ? 25 : 32)+3*row, " %c ", reps[capval(color, row, spot, game)]);
+}
+
 void printBoard(Game *game) {
     Pos iter;
     for(iter.rank = 0; iter.rank >= 0; ++iter.rank) {
@@ -43,12 +48,32 @@ void printBoard(Game *game) {
             printSpot(iter, game);
         }
     }
+    for(iter.rank = 0; iter.rank >=0; ++iter.rank) {
+        printCap(0, 0, iter.rank, game);
+        printCap(0, 1, iter.rank, game);
+        printCap(1, 0, iter.rank, game);
+        printCap(1, 1, iter.rank, game);
+    }
     mvprintw(8, 0, "%X %X %X", game->info.castle, game->info.enp, game->info.color);
+}
+
+void displayMoves(Move *move) {
+    Move *iter;
+    char n;
+    if(move == NULL) {
+        return;
+    }
+    for(iter = move; iter->next; iter = iter->next) {
+        mvchgat(7-iter->dst.rank, 3*iter->dst.file, 3, A_REVERSE, 3, NULL);
+        mvprintw(12+(n++), 0, "%d %d", iter->dst.rank, iter->dst.file);
+    }
 }
 
 void user(Game *game) {
     static char ch;
+    static Move *valid;
     static Move move;
+    static Pos pos;
     static char cursX = 0;
     static char cursY = 0;
     mvchgat(cursY, 3*cursX, 3, A_REVERSE, 3, NULL);
@@ -67,6 +92,11 @@ void user(Game *game) {
             case 'l':
                 cursX = (cursX + 1) % 8;
                 break;
+            case 'v':
+                printBoard(game);
+                pos = (Pos){cursX, 7-cursY};
+                valid = possible(pos, game);
+                displayMoves(valid);
             case 's':
                 move.src = (Pos){cursX, 7-cursY};
                 move.piece = value(move.src, game);
@@ -74,8 +104,9 @@ void user(Game *game) {
             case 'd':
                 move.dst = (Pos){cursX, 7-cursY};
                 move.capture = value(move.dst, game);
-                execMove(move, game);
-                printBoard(game);
+                if(execMove(move, game)) {
+                    printBoard(game);
+                }
                 break;
         }
         mvchgat(cursY, 3*cursX, 3, A_REVERSE, 3, NULL);
