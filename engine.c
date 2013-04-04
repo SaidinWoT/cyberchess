@@ -1,327 +1,10 @@
-#include <ncurses.h>
 #include <stdlib.h>
 #include "chess.h"
 #include "engine.h"
 
-#define COLOR(file,rank) (((file) + (rank)) % 2 ? 1 : 2)
+#define color(val) (val >> 3)
 
-char inline value(Pos spot, Game *game) { /* Get value of nybble at spot {{{ */
-    return (game->board[spot.rank] >> (spot.file << 2)) & 0xF;
-} /* }}} */
-
-char inline capval(char color, char row, char spot, Game *game) { /* Get value of nybble in capture zone {{{ */
-    return (game->capture[color][row] >> (spot << 2)) & 0xF;
-} /* }}} */
-
-void inline unset(Pos spot, Game *game) { /* Unset nybble at spot {{{ */
-    game->board[spot.rank] &= ~(0xF << (spot.file << 2));
-} /* }}} */
-
-void inline set(Pos spot, char piece, Game *game) { /* Set nybble at spot to piece {{{ */
-    game->board[spot.rank] |= (piece << (spot.file << 2));
-} /* }}} */
-
-void enp(Game *game) { /* Remove old en passant values {{{ */
-    Pos temp = (Pos){game->info.enp, game->info.color ? 2 : 5}; //  Identify correct spot
-    if((value(temp, game) & 0x7) == ENP) {  // If spot is En Passant...
-        unset(temp, game);                  // ...unset it
-    }
-} /* }}} */
-
-static char castle(Move move, Game *game) { /* Deal with castling. NOT COMPLETE. {{{ */
-    static Pos spots[4] = {(Pos){2,0}, (Pos){6,0}, (Pos){2,7}, (Pos){6,7}};     // Possible destinations
-    static Pos checks[4] = {(Pos){3,0}, (Pos){5,0}, (Pos){3,7}, (Pos){5,7}};    // Possible passthrough spots
-    char i;
-    if(threatened(game->king[game->info.color], game)) {    // Cannot castle if starting in check
-        return 0;
-    }
-    for(i = 0; i < 4; ++i) {    // Iterate through spots list to find desired castling
-        if(move.dst.file == spots[i].file && move.dst.rank == spots[i].rank) {
-            if(threatened(spots[i], game)) {    // Cannot castle into check
-                return 0;
-            }
-            break;
-        }
-    }
-    if(threatened(checks[i], game)) {   // Cannot castle through check
-        return 0;
-    }
-    return 0;
-} /* }}} */
-
-void fixCastle(Move move, Game *game) { /* Correct the castling flag nybble based on rook or king movement {{{ */
-    char i;
-    static Pos rooks[4] = {(Pos){0,0}, (Pos){7,0}, (Pos){0,7}, (Pos){7,7}}; // Possible rook locations
-    if((move.piece & 0x7) == ROOK) {
-        for(i = 0; i < 4; ++i) {    // Iterate through rook spots to identify which one moved
-            if(move.src.file == rooks[i].file && move.src.rank == rooks[i].rank) {
-                game->info.castle &= ~(0x1 << i);   // Remove respective entry from castling flag nybble
-            }
-        }
-    } else if ((move.piece & 0x7) == KING) {
-        game->info.castle &= ~(0x3 << (game->info.color << 1)); // Remove respective entry from castling flag nybble
-    }
-} /* }}} */
-
-static char empty(Move move, Game *game) { /* Empty movement. For completeness. {{{ */
-    return 0; // Can't move nothing anywhere. Always fail.
-} /* }}} */
-
-static char pawn(Move move, Game *game) { /* Pawn movement {{{ */
-    Pos diff;
-    Pos temp;
-    if(move.capture) {  // Capturing is special
-        diff.file = move.dst.file - move.src.file;
-        diff.rank = (move.piece & 0x8 ? 1 : -1);    // Determine direction of movement based on color
-        if((diff.file*diff.file == 1) && (move.src.rank == move.dst.rank + diff.rank)) {
-            if((move.capture & 0x7) == ENP) {   // Deal with capturing En Passant spots properly
-                temp = (Pos){move.dst.file, move.dst.rank + diff.rank}; // Identify relevant pawn...
-                unset(temp, game);                                      // ...and unset it
-            }
-            return 1;
-        }
-    }
-    if(move.src.file != move.dst.file) { // Make sure pawn is remaining in its file if not capturing
-        return 0;
-    }
-    diff.rank = move.dst.rank - move.src.rank;
-    /* Deal with possible initial move of two spaces */
-    temp = (Pos){move.src.file, (move.piece & 0x8 ? 5 : 2)};
-    if((move.src.rank == (move.piece & 0x8 ? 6 : 1)) && (diff.rank*diff.rank == 4) && !(value(temp, game))) {
-        temp = (Pos){move.dst.file, move.dst.rank + (move.piece & 0x8 ? 1 : -1)};
-        set(temp, (ENP | (game->info.color << 3)), game);   // Stick in en passant marker
-        enp(game);                                          // Clean up old markers - done in this function due to next line
-        game->info.enp = move.dst.file;                     // Record new en passant marker in info
-        return 1;
-    }
-    return diff.rank*diff.rank == 1;
-} /* }}} */
-
-static char knight(Move move, Game *game) { /* Knight movement {{{ */
-    Pos diff = (Pos){move.dst.file - move.src.file, move.dst.rank - move.src.rank};
-    return diff.file * diff.file + diff.rank * diff.rank == 5;
-} /* }}} */
-
-static char king(Move move, Game *game) { /* King movement {{{ */
-    Pos diff = (Pos){move.dst.file - move.src.file, move.dst.rank - move.src.rank};
-    if(diff.file*diff.file <= 1 && diff.rank*diff.rank <= 1) {
-        game->king[move.piece & BLACK ? 1 : 0] = move.dst;  // Update king location for check function
-        return 1;
-    }
-    if(castle(move, game)) {    // Determine if castling
-        return 1;
-    }
-    return 0;
-} /* }}} */
-
-static char bishop(Move move, Game *game) { /* Bishop movement {{{ */
-    Pos diff = (Pos){move.dst.file - move.src.file, move.dst.rank - move.src.rank};
-    Pos vect = {diff.file > 0 ? -1 : 1, diff.rank > 0 ? -1 : 1};
-    Pos temp;
-    if(diff.file*diff.file != diff.rank*diff.rank) {
-        return 0; // Don't waste time if it's not a diagnoal move
-    }
-    for(diff.file += vect.file, diff.rank += vect.rank; diff.file != 0; diff.file += vect.file, diff.rank += vect.rank) {
-        temp = (Pos){move.src.file + diff.file, move.src.rank + diff.rank};
-        if(value(temp, game) & 0x3) {
-            return 0;
-        }
-    }
-    return 1;
-} /* }}} */
-
-static char rook(Move move, Game *game) { /* Rook movement {{{ */
-    Pos diff = (Pos){move.dst.file - move.src.file, move.dst.rank - move.src.rank};
-    Pos vect = (Pos){diff.file > 0 ? -1 : 1, diff.rank > 0 ? -1 : 1};
-    Pos temp;
-    if(!diff.file) { // Moving along a file?
-        for(diff.rank += vect.rank; diff.rank != 0; diff.rank += vect.rank) {
-            temp = (Pos){move.src.file, move.src.rank + diff.rank};
-            if(value(temp, game) & 0x3) {
-                return 0;
-            }
-        }
-        return 1;
-    } else if(!diff.rank) { // Moving along a rank?
-        for(diff.file += vect.file; diff.file != 0; diff.file += vect.file) {
-            temp = (Pos){move.src.file + diff.file, move.src.rank};
-            if(value(temp, game) & 0x3) {
-                return 0;
-            }
-        }
-        return 1;
-    }
-    return 0;
-} /* }}} */
-
-char queen(Move move, Game *game) { /* Queen movement {{{ */
-    return (rook(move, game) || bishop(move, game));    // Is it moving like a rook or bishop? Good.
-} /* }}} */
-
-char valid(Move move, Game *game) { /* Is the move valid? {{{ */
-    static char (*moves[8])(Move move, Game *game) = {empty, pawn, knight, king, empty, bishop, rook, queen}; 
-    if(move.capture && !((move.capture ^ move.piece) >> 3) && (move.capture & 0x7 != ENP)) {
-        return 0;
-    }
-    if(!(*moves[move.piece & 0x7])(move, game)) {
-        return 0;
-    }
-    return 1;
-} /* }}} */
-
-void doMove(Move move, Game *game) { /* Actually update the board. {{{ */
-    unset(move.dst, game);
-    set(move.dst, value(move.src, game), game);
-    unset(move.src, game);
-} /* }}} */
-
-char threatened(Pos spot, Game *game) { /* Is spot threatened by any piece? {{{ */
-    Pos iter;
-    Move move;
-    move.dst = spot;
-    move.capture = value(spot, game);
-    for(iter.rank = 0; iter.rank >= 0; ++iter.rank) {
-        for(iter.file = 0; iter.file >= 0; ++iter.file) {
-            move.src = iter;
-            move.piece = value(iter, game);
-            if(valid(move, game)) {
-                return 1;
-            }
-        }
-    }
-    return 0;
-} /* }}} */
-
-char check(Game *game) { /* Is either king in check? NOTE: This logic may be moved to the execMove() function {{{ */
-    if(threatened(game->king[game->info.color], game)) {
-        return 1;
-    }
-    if(threatened(game->king[!game->info.color], game)) {
-        return 0;
-    }
-    return 0;
-} /* }}} */
-
-/* Old logic below {{{ */
-/*    Pos spot;
-    Move toKing[2];
-    toKing[0].dst = game->king[0];
-    toKing[1].dst = game->king[1];
-    toKing[0].capture = WHITE | KING;
-    toKing[1].capture = BLACK | KING;
-    for(spot.rank = 0; spot.rank >= 0; ++spot.rank) {
-        for(spot.file = 0; spot.file >= 0; ++spot.file) {
-            if((toKing[0].piece = toKing[1].piece = value(spot, game))) {
-                toKing[0].src = toKing[1].src = spot;
-                if(valid(toKing[game->info.color], game)) {
-                    return 1;
-                }
-                if(valid(toKing[!game->info.color], game)) {
-                }
-            }
-        }
-    }
-    return 0;
-}*/
-/* }}} */
-
-void copyMove(Move *new, Move old) { /* Make pointer out of move object for possible() {{{ */
-    new->piece = old.piece;
-    new->capture = old.capture;
-    new->src = old.src;
-    new->dst = old.dst;
-    new->next = old.next;
-} /* }}} */
-
-void copyGame(Game *new, Game *old) { /* Copy game from one pointer to another {{{ */
-    int n;
-    for(n = 0; n < 8; ++n) {
-        new->board[n] = old->board[n];
-    }
-    new->info = old->info;
-    new->king[0] = old->king[0];
-    new->king[1] = old->king[1];
-} /* }}} */
-
-void capture(Move move, Game *game) { /* Properly execute a capture, relocating piece to capture zone {{{ */
-    if((move.capture & 0x7) == ENP) { // Correcting for En Passant
-        move.capture = 0;
-        move.capture |= ((move.piece & 0x7) == PAWN) ? PAWN | (!game->info.color) << 3 : EMPTY;
-    }
-    if(move.capture) {
-        game->capture[game->info.color][game->info.color ? game->info.brow : game->info.wrow] |= (move.capture << ((game->info.color ? game->info.bcap : game->info.wcap) << 2));
-        if(game->info.color) {
-            if(!++game->info.bcap) {
-                ++game->info.brow;
-            } 
-        } else {
-            if(!++game->info.wcap) {
-                ++game->info.wrow;
-            }
-        }
-    }
-} /* }}} */
-
-char execMove(Move move, Game *game) { /* Actually execute a move! Lots of logic in here. {{{ */
-    Game *new = malloc(sizeof(Game));
-    Game *save = malloc(sizeof(Game));
-    copyGame(save, game);   // Hold on to the game state if we need to bail further down
-    if((move.piece >> 3) ^ game->info.color) {  // Is the wrong color trying to move? Don't let them.
-        free(save);
-        free(new);
-        return 0;
-    }
-    if(!valid(move, game)) {    // Is the move invalid? Don't let it happen.
-        free(save);
-        free(new);
-        return 0;
-    }
-    copyGame(new, game);    // Make a copy of the game to test changes on
-    enp(new);   // Unset en passant markers on the copy
-    if(game->info.castle) { // Modify the castling flag nybble as needed
-        fixCastle(move, new);
-    }
-    doMove(move, new);  // Actually do the move on the copy
-    if(check(new)) {    // If this leaves own king in check, bail out
-        copyGame(game, save);
-        free(save);
-        free(new);
-        return 0;
-    }
-    copyGame(game, new);    // Commit to the change
-    capture(move, game);    // Properly address captures
-    game->info.color = !game->info.color;   // Change whose turn it is
-    free(save);
-    free(new);
-    return 1;
-} /* }}} */
-
-Move *possible(Pos spot, Game *game) { /* Produce a list of valid moves. Currently terminates with a Move at 0,0 {{{ */
-    Move *list = malloc(sizeof(Move));
-    Move *curr = list;
-    Move move;
-    Pos iter;
-
-    move.src = spot;
-    move.piece = value(spot, game);
-
-    for(iter.rank = 0; iter.rank >= 0; ++iter.rank) {   // Iterate through everything
-        for(iter.file = 0; iter.file >= 0; ++iter.file) {
-            move.dst = iter;
-            move.capture = value(iter, game);
-            if(valid(move, game)) { // If the move is valid, add it to the list
-                /* This currently causes en passant markers to be placed if
-                 * pawns would place them. This needs to be fixed. */
-                copyMove(curr, move);
-                curr->next = malloc(sizeof(Move));
-                curr = curr->next;
-            }
-        }
-    }
-    return list;
-} /* }}} */
-
-Game *newGame() { /* Create a clean game {{{ */
+Game *newGame(char (*getfunc)()) { /* Create a clean game {{{1 */
     Game *new = malloc(sizeof(Game));
     new->board[0] = 0x62537526;
     new->board[1] = 0x11111111;
@@ -336,7 +19,6 @@ Game *newGame() { /* Create a clean game {{{ */
     new->capture[1][0] = 0x00000000;
     new->capture[1][1] = 0x00000000;
     new->info.castle = 0xF;
-    new->info.enp = 0;
     new->info.wrow = 0;
     new->info.brow = 0;
     new->info.wcap = 0;
@@ -344,5 +26,341 @@ Game *newGame() { /* Create a clean game {{{ */
     new->info.color = 0;
     new->king[0] = (Pos){4,0};
     new->king[1] = (Pos){4,7};
+    new->fp = getfunc;
     return new;
-} /* }}} */
+}
+
+void copyGame(Game *new, Game *game) { /* Copy the values of one game pointer to another {{{1 */
+    int n;
+    for(n = 0; n < 8; ++n) {
+        new->board[n] = game->board[n];
+    }
+    new->capture[0][0] = game->capture[0][0];
+    new->capture[0][1] = game->capture[0][1];
+    new->capture[1][0] = game->capture[1][0];
+    new->capture[1][1] = game->capture[1][1];
+    new->info = game->info;
+    new->king[0] = game->king[0];
+    new->king[1] = game->king[1];
+}
+
+char inline value(Pos spot, Game *game) { /* Get value of nybble at spot {{{1 */
+    return (game->board[spot.rank] >> (spot.file << 2)) & 0xF;
+}
+
+char inline capval(char color, char row, char spot, Game *game) { /* Get value of nybble in capture zone {{{1 */
+    return (game->capture[color][row] >> (spot << 2)) & 0xF;
+}
+
+void inline unset(Pos spot, Game *game) { /* Unset nybble at spot {{{1 */
+    game->board[spot.rank] &= ~(0xF << (spot.file << 2));
+}
+
+void inline set(Pos spot, char piece, Game *game) { /* Set nybble at spot to piece {{{1 */
+    game->board[spot.rank] |= (piece << (spot.file << 2));
+}
+
+Pos inline movediff(Move move) { /* Return the distances travelled in a Pos {{{1 */
+    return (Pos){move.dst.file - move.src.file, move.dst.rank - move.src.rank};
+}
+
+static void enp(Game *game) { /* Clean up any old en passant markers {{{1 */
+    Pos spot = (Pos){7, game->info.color ? 2 : 5};  // Set appropriate rank
+    for(; spot.file >= 0; --spot.file) {            // Iterate through spots in rank
+        if((value(spot, game) & 0x7) == ENP) {
+            unset(spot, game);                      // Unset if en passant marker
+        }
+    }
+}
+
+char threatened(char color, Pos spot, Game *game) { /* Check if spot is threatened, assuming it matches color {{{1 */
+    Pos iter;
+    Move move;
+    move.dst = spot;
+    move.capture = value(spot, game);
+    for(iter.rank = 7; iter.rank >= 0; --iter.rank) {
+        for(iter.file = 7; iter.file >= 0; --iter.file) {   // Iterate through spots on board
+            move.src = iter;
+            move.piece = value(iter, game);
+            if((color != color(move.piece)) && valid(move, game)) {
+                return 1;   // Return 1 if opposing piece can legally move to spot
+            }
+        }
+    }
+    return 0;   // Return 0 if no pieces can legally move to spot
+}
+
+static void fixCastle(Move move, Game *game) { /* Fix up the castling flag nybble as needed {{{1 */
+    static Pos rooks[2][2] = { {(Pos){0, 0}, (Pos){7, 0} }, {(Pos){0, 7}, (Pos){7, 7} } };
+    char c = color(move.piece);
+    if((move.piece & 0x7) == ROOK) {    // If rook, unset bit based on src location
+        if((move.src.file == rooks[c][0].file) && (move.src.rank == rooks[c][0].rank)) {
+            game->info.castle &= ~(0x1 << (2*c));
+        }
+        if((move.src.file == rooks[c][1].file) && (move.src.rank == rooks[c][1].rank)) {
+            game->info.castle &= ~(0x1 << (2*c+1));
+        }
+    }
+    if((move.piece & 0x7) == KING) {    // If king, unset bits based on color
+        game->info.castle &= ~(0x3 << 2*c);
+    }
+}
+
+static char castle(Move move, Game *game) { /* Deal with castling {{{1 */
+    static Pos rooks[2][2] = { {(Pos){0, 0}, (Pos){7, 0} }, {(Pos){0, 7}, (Pos){7, 7} } }; // Rook starting positions
+    static Pos empty[2] = {(Pos){1, 0}, (Pos){1, 7}};                                   // Empty squares for Q-side
+    static Pos kdst[2][2] = { {(Pos){2, 0}, (Pos){6, 0} }, {(Pos){2, 7}, (Pos){6, 7} } };  // Destinations for kings
+    static Pos rdst[2][2] = { {(Pos){3, 0}, (Pos){5, 0} }, {(Pos){3, 7}, (Pos){5, 7} } };  // Destinations for rooks
+    char i;
+    char c = color(move.piece);
+    if((move.dst.file == kdst[c][0].file) && move.dst.rank == kdst[c][0].rank) {
+        if(value(kdst[c][0], game) || value(rdst[c][0], game) || value(empty[c], game)) {
+            return 0;   // Fail if spots aren't empty
+        }
+        i = 0;
+    } else if((move.dst.file == kdst[c][1].file) && move.dst.rank == kdst[c][1].rank) {
+        if(value(kdst[c][1], game) || value(rdst[c][1], game)) {
+            return 0;   // Fail if spots aren't empty
+        }
+        i = 1;
+    } else {
+        return 0;   // Fail if king is moving somewhere that isn't a castling destination
+    }
+    if(!((0x1 << (2*c+i)) & game->info.castle)) {
+        return 0;   // Fail if king or rook have moved
+    }
+    if(threatened(c, game->king[c], game) || threatened(c, kdst[c][i], game) || threatened(c, rdst[c][i], game)) {
+        return 0;   // Fail if starting in, passing through, or ending in check
+    }
+    Move rook = (Move){ROOK, EMPTY, rooks[c][i], rdst[c][i]};
+    doMove(rook, game); // Move rook to its destination
+    return 1;   // Send success so king will move
+}
+
+static char mate(char color, Game *game) { /* Check for {check,stale}mate {{{1 */
+    Move *moves;
+    Pos iter;
+    for(iter.rank = 7; iter.rank >= 0; --iter.rank) {
+        for(iter.file = 7; iter.file >= 0; --iter.file) {
+            if(color(value(iter, game)) == color) { // Make sure we're only looking at threatened color
+                moves = possible(iter, game);
+                if(moves->next) {   // If moves are available, moves->next will be non-NULL
+                    return 0;   // If anyone can move, it's not mate
+                }
+            }
+        }
+    }
+    return 1; // If no one could move, it was mate
+}
+
+static Move promote(Move move, Game *game) { /* Promote a pawn. Calls game's callback function to determine piece {{{1 */
+    if((move.piece & 0x7) != PAWN) {
+        return; // You can't promote a non-pawn
+    }
+    if(move.dst.rank != (color(move.piece) ? 0 : 7)) {
+        return; // Pawns only promote at the end
+    }
+    unset(move.src, game);
+    set(move.src, (move.piece & 0x8) | (game->fp() & 0x7), game);   // Use callback to determine new value
+}
+
+static char empty(Move move, Game *game) { /* Empty movement. For completeness. {{{1 */
+    return 0;
+}
+
+static char pawn(Move move, Game *game) { /* Pawn movement {{{1 */
+    Pos diff = movediff(move);
+    Pos temp;
+    char dir = (color(move.piece) ? -1 : 1);    // Proper direction of motion based on color
+    if(move.capture) {  // Pawn captures need special logic
+        if((diff.file*diff.file == 1) && (move.src.rank + dir == move.dst.rank)) {
+            if((move.capture & 0x7) == ENP) {
+                temp = (Pos){move.dst.file, move.src.rank};
+                unset(temp, game);  // Unset the pawn that matches the en passant marker
+            }
+            return 1;
+        }
+        return 0;
+    }
+    if(move.src.file != move.dst.file) {
+        return 0;   // Fail if the pawn is trying to leave its file without a capture
+    }
+    temp = (Pos){move.src.file, (color(move.piece) ? 5 : 2)};
+    if((move.src.rank == (color(move.piece) ? 6 : 1)) && (diff.rank*diff.rank == 4) && !(value(temp, game))) {
+        set(temp, (ENP | (game->info.color << 3)), game);   // Leave an en passant marker
+        return 1;
+    }
+    return diff.rank == dir;
+}
+
+static char knight(Move move, Game *game) { /* Knight movement {{{1 */
+    Pos diff = movediff(move);
+    return diff.file*diff.file + diff.rank*diff.rank == 5;
+}
+
+static char king(Move move, Game *game) { /* King movement {{{1 */
+    Pos diff = movediff(move);
+    if(diff.file*diff.file <= 1 && diff.rank*diff.rank <= 1 || castle(move, game)) {
+        game->king[color(move.piece)] = move.dst;   // Record new king location
+        return 1;
+    }
+    return 0;
+}
+
+static char bishop(Move move, Game *game) { /* Bishop movement {{{1 */
+    Pos diff = movediff(move);
+    Pos vect = {diff.file > 0 ? -1 : 1, diff.rank > 0 ? -1 : 1};
+    Pos temp;
+    if(diff.file*diff.file != diff.rank*diff.rank) {
+        return 0; // Don't waste time if it's not a diagnoal move
+    }
+    for(diff.file += vect.file, diff.rank += vect.rank; diff.file != 0; diff.file += vect.file, diff.rank += vect.rank) {
+        temp = (Pos){move.src.file + diff.file, move.src.rank + diff.rank};
+        if(value(temp, game) & 0x3) {
+            return 0; // Fail if spot is not empty or en passant marker
+        }
+    }
+    return 1;
+}
+
+static char rook(Move move, Game *game) { /* Rook movement {{{1 */
+    Pos diff = movediff(move);
+    Pos vect = (Pos){diff.file > 0 ? -1 : 1, diff.rank > 0 ? -1 : 1};
+    Pos temp;
+    if(!diff.file) { // Moving along a file?
+        for(diff.rank += vect.rank; diff.rank != 0; diff.rank += vect.rank) {
+            temp = (Pos){move.src.file, move.src.rank + diff.rank};
+            if(value(temp, game) & 0x3) {
+                return 0; // Fail if spot is not empty or en passant marker
+            }
+        }
+        return 1;
+    } else if(!diff.rank) { // Moving along a rank?
+        for(diff.file += vect.file; diff.file != 0; diff.file += vect.file) {
+            temp = (Pos){move.src.file + diff.file, move.src.rank};
+            if(value(temp, game) & 0x3) {
+                return 0; // Fail if spot is not empty or en passant marker
+            }
+        }
+        return 1;
+    }
+    return 0; // Fail if not moving horizontally or vertically
+}
+
+static char queen(Move move, Game *game) { /* Queen movement {{{1 */
+    return (rook(move, game) || bishop(move, game));    // Queen moves either like a rook or bishop
+}
+
+char valid(Move move, Game *game) { /* Is the move valid? {{{1 */
+    static char (*moves[8])(Move move, Game *game) = {empty, pawn, knight, king, empty, bishop, rook, queen};
+    Pos diff = movediff(move);
+    if(diff.rank == 0 & diff.file == 0) {
+        return 0;   // Fail if trying to move to self
+    }
+    if(move.capture && (color(move.capture) == color(move.piece))) {
+        if(move.capture & 0x3) {
+            return 0;   // Fail if trying to capture own piece
+        } else {
+            move.capture = EMPTY;   // Kill rogue en passant markers (none should exist of own color)
+        }
+    }
+    return (*moves[move.piece & 0x7])(move, game);  // Rest of the work done by helper functions
+}
+
+void doMove(Move move, Game *game) { /* Actually update the board. {{{1 */
+    unset(move.dst, game);
+    set(move.dst, value(move.src, game), game);
+    unset(move.src, game);
+}
+
+void capture(Move move, Game *game) { /* Properly execute a capture, relocating piece to capture zone {{{1 */
+    if((move.capture & 0x7) == ENP) {   // Make en passant markers show up as pawns in capture zone
+        move.capture = ((move.piece & 0x7) == PAWN) ? PAWN | (!game->info.color) << 3 : EMPTY;
+    }
+    if(move.capture) {
+        game->capture[game->info.color][game->info.color ? game->info.brow : game->info.wrow] |= (move.capture << ((game->info.color ? game->info.bcap : game->info.wcap) << 2));
+        if(game->info.color) {
+            if(!++game->info.bcap) {    // Increment black capture zone spot
+                ++game->info.brow;      // Move on to next row as needed
+            }
+        } else {
+            if(!++game->info.wcap) {    // Increment white capture zone spot
+                ++game->info.wrow;      // Move on to next row as needed
+            }
+        }
+    }
+}
+
+char execMove(Move move, Game *game) { /* Actually execute a move! Lots of logic in here. {{{1 */
+    Game *save = malloc(sizeof(Game));
+    copyGame(save, game);   // Hold on to current board state if we need to bail
+    if(color(move.piece) ^ game->info.color) {
+        free(save);
+        return TURN;    // Fail if wrong color is trying to move
+    }
+    if(!valid(move, game)) {
+        free(save);
+        return INVALID; // Fail if move is invalid
+    }
+    enp(game);  // Remove old en passant markers
+    promote(move, game);    // See if we're promoting a pawn
+    doMove(move, game);     // Execute the move
+    if(threatened(game->info.color, game->king[game->info.color], game)) {
+        copyGame(game, save);
+        free(save);
+        return THREAT;  // Fail if own king will be threatened
+    }
+    if(!game->info.castle) {
+        fixCastle(move, game);  // Unset castling flags as needed
+    }
+    capture(move, game);    // Stick captured pieces in the capture zone
+    game->info.color = !game->info.color;   // Switch whose turn it is
+    game->info.check = threatened(game->info.color, game->king[game->info.color], game);    // See if move caused check
+    game->info.mate = mate(game->info.color, game); // See if opponent is capable of moving
+    if(game->info.check & game->info.mate) {
+        return MATE;    // Return checkmate if opponent is in check and cannot move
+    }
+    if(game->info.mate) {
+        return STALE;   // Return stalemate if opponent cannot move but is not in check
+    }
+    if(game->info.check) {
+        return CHECK;   // Return check if opponent is in check and can move
+    }
+    free(save);
+    return 1;   // Return 1 if nothing is special
+}
+
+Move *possible(Pos spot, Game *game) { /* Produce a list of valid moves. Terminates with one extra Move node {{{1 */
+    Game *test = malloc(sizeof(Game));
+    Move *list = malloc(sizeof(Move));
+    Move *curr = list;
+    Move move;
+    Pos iter;
+
+    list->next = NULL;
+    move.src = spot;
+    move.piece = value(spot, game);
+    if(color(move.piece) != game->info.color) {
+        return list;    // No reason to give valid moves for pieces that cannot move right now
+    }
+
+    for(iter.rank = 7; iter.rank >= 0; --iter.rank) {
+        for(iter.file = 7; iter.file >= 0; --iter.file) {
+            copyGame(test, game);   // Work in a disposable environment
+            move.dst = iter;
+            move.capture = value(iter, test);
+            if(valid(move, test)) {
+                doMove(move, test); // Actually make the move (in our disposable environment)
+                if(!threatened(test->info.color, test->king[test->info.color], test)) {
+                    *curr = move;   // If it's valid, stick it on the list
+                    curr->next = malloc(sizeof(Move));
+                    curr = curr->next;
+                }
+            }
+        }
+    }
+
+    free(test);
+
+    return list;
+}

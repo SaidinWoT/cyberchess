@@ -2,6 +2,12 @@
 #define _CHESS_H
 
 #define REPS " PNK?BRQ!pnk/brq"
+#define TURN    -1
+#define INVALID -2
+#define THREAT  -3
+#define CHECK   2
+#define STALE   3
+#define MATE    4
 
 typedef int Row;
 
@@ -25,23 +31,25 @@ typedef struct _Move {
 
 typedef struct _Game {
     struct {
-        unsigned int \
+        unsigned short \
             castle:4, \
-            enp:3, \
             bcap:3, \
             wcap:3, \
             brow:1, \
             wrow:1, \
-            color:1;
+            color:1, \
+            stale:1, \
+            check:1, \
+            mate:1;
     } info;
     Pos king[2];
     Row capture[2][2];
     Row board[8];
+    char (*fp)();
 } Game;
 
 extern Game *newGame();
-extern char value(Pos spot, Game *game);
 extern Move *possible(Pos spot, Game *game);
-extern void printBoard(Game *game);
+extern char value(Pos spot, Game *game);
 
 #endif /* !_CHESS_H */

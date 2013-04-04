@@ -6,6 +6,7 @@
 void printSpot(Pos spot, Game *game);
 void printBoard(Game *game);
 void user(Game *game);
+char getPromo();
 
 int main(int argc, char **argv) {
     initscr();
@@ -20,13 +21,34 @@ int main(int argc, char **argv) {
     curs_set(0);
     noecho();
 
-    Game *game = newGame();
+    Game *game = newGame(getPromo);
     printBoard(game);
 
     user(game);
     endwin();
 
     return 0;
+}
+
+char getPromo() {
+    char piece;
+    mvprintw(9, 0, "What would you like to promote your pawn to?");
+    mvprintw(10, 0, "R N B Q");
+    piece = getch();
+    switch(piece) {
+        case 'Q':
+        case 'q':
+            return 0x7;
+        case 'N':
+        case 'n':
+            return 0x2;
+        case 'R':
+        case 'r':
+            return 0x6;
+        case 'B':
+        case 'b':
+            return 0x5;
+    }
 }
 
 void printSpot(Pos spot, Game *game) {
@@ -43,6 +65,8 @@ void printCap(char color, char row, char spot, Game *game) {
 
 void printBoard(Game *game) {
     Pos iter;
+    move(8, 0);
+    clrtobot();
     for(iter.rank = 0; iter.rank >= 0; ++iter.rank) {
         for(iter.file = 0; iter.file >= 0; ++iter.file) {
             printSpot(iter, game);
@@ -54,7 +78,7 @@ void printBoard(Game *game) {
         printCap(1, 0, iter.rank, game);
         printCap(1, 1, iter.rank, game);
     }
-    mvprintw(8, 0, "%X %X %X", game->info.castle, game->info.enp, game->info.color);
+    mvprintw(8, 0, "%X %X", game->info.castle, game->info.color);
 }
 
 void displayMoves(Move *move) {
@@ -65,12 +89,12 @@ void displayMoves(Move *move) {
     }
     for(iter = move; iter->next; iter = iter->next) {
         mvchgat(7-iter->dst.rank, 3*iter->dst.file, 3, A_REVERSE, 3, NULL);
-        mvprintw(12+(n++), 0, "%d %d", iter->dst.rank, iter->dst.file);
     }
 }
 
 void user(Game *game) {
     static char ch;
+    static char ret;
     static Move *valid;
     static Move move;
     static Pos pos;
@@ -104,9 +128,31 @@ void user(Game *game) {
             case 'd':
                 move.dst = (Pos){cursX, 7-cursY};
                 move.capture = value(move.dst, game);
-                if(execMove(move, game)) {
+                ret = execMove(move, game);
+                if(ret > 0) {
                     printBoard(game);
                 }
+                switch(ret) {
+                    case TURN:
+                        mvprintw(9, 0, "It's not your turn.");
+                        break;
+                    case INVALID:
+                        mvprintw(9, 0, "That piece can't move like that.");
+                        break;
+                    case THREAT:
+                        mvprintw(9, 0, "That would leave your king in check.");
+                        break;
+                    case CHECK:
+                        mvprintw(9, 0, "Check!");
+                        break;
+                    case STALE:
+                        mvprintw(9, 0, "Stalemate!");
+                        break;
+                    case MATE:
+                        mvprintw(9, 0, "Checkmate!");
+                        break;
+                }
+                clrtoeol;
                 break;
         }
         mvchgat(cursY, 3*cursX, 3, A_REVERSE, 3, NULL);
