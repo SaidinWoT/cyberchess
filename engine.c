@@ -275,7 +275,7 @@ void doMove(Move move, Game *game) { /* Actually update the board. {{{1 */
 
 void capture(Move move, Game *game) { /* Properly execute a capture, relocating piece to capture zone {{{1 */
     if((move.capture & 0x7) == ENP) {   // Make en passant markers show up as pawns in capture zone
-        move.capture = ((move.piece & 0x7) == PAWN) ? PAWN | (!game->info.color) << 3 : EMPTY;
+        move.capture = ((move.piece & 0x7) == PAWN) ? PAWN | ((!game->info.color) << 3) : EMPTY;
     }
     if(move.capture) {
         game->capture[game->info.color][game->info.color ? game->info.brow : game->info.wrow] |= (move.capture << ((game->info.color ? game->info.bcap : game->info.wcap) << 2));
@@ -317,6 +317,7 @@ char execMove(Move move, Game *game) { /* Actually execute a move! Lots of logic
     game->info.color = !game->info.color;   // Switch whose turn it is
     game->info.check = threatened(game->info.color, game->king[game->info.color], game);    // See if move caused check
     game->info.mate = mate(game->info.color, game); // See if opponent is capable of moving
+    free(save);
     if(game->info.check & game->info.mate) {
         return MATE;    // Return checkmate if opponent is in check and cannot move
     }
@@ -326,7 +327,6 @@ char execMove(Move move, Game *game) { /* Actually execute a move! Lots of logic
     if(game->info.check) {
         return CHECK;   // Return check if opponent is in check and can move
     }
-    free(save);
     return 1;   // Return 1 if nothing is special
 }
 
