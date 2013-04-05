@@ -38,16 +38,16 @@ char getPromo() {
     switch(piece) {
         case 'Q':
         case 'q':
-            return 0x7;
+            return QUEEN;
         case 'N':
         case 'n':
-            return 0x2;
+            return KNIGHT;
         case 'R':
         case 'r':
-            return 0x6;
+            return ROOK;
         case 'B':
         case 'b':
-            return 0x5;
+            return BISHOP;
     }
 }
 
@@ -121,6 +121,7 @@ void user(Game *game) {
                 pos = (Pos){cursX, 7-cursY};
                 valid = possible(pos, game);
                 displayMoves(valid);
+                break;
             case 's':
                 move.src = (Pos){cursX, 7-cursY};
                 move.piece = value(move.src, game);

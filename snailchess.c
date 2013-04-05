@@ -122,6 +122,7 @@ void user(Game *game) {
                 pos = (Pos){cursX, 7-cursY};
                 valid = possible(pos, game);
                 displayMoves(valid);
+                break;
             case ' ':
                 if(src) {
                     move.src = (Pos){cursX, 7-cursY};
