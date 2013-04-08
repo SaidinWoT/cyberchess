@@ -2,8 +2,10 @@
 #include "chess.h"
 
 #define COLOR(file,rank) (((file) + (rank)) % 2 ? 1 : 2)
+#define MSG 10
 
 void printSpot(Pos spot, Game *game);
+void printBorder();
 void printBoard(Game *game);
 void user(Game *game);
 char getPromo();
@@ -21,6 +23,7 @@ int main(int argc, char **argv) {
     curs_set(0);
     noecho();
 
+    printBorder();
     Game *game = newGame(getPromo);
     printBoard(game);
 
@@ -32,8 +35,8 @@ int main(int argc, char **argv) {
 
 char getPromo() {
     char piece;
-    mvprintw(9, 0, "What would you like to promote your pawn to?");
-    mvprintw(10, 0, "R N B Q");
+    mvprintw(MSG, 0, "What would you like to promote your pawn to?");
+    mvprintw(MSG+1, 0, "R N B Q");
     piece = getch();
     switch(piece) {
         case 'Q':
@@ -54,18 +57,29 @@ char getPromo() {
 void printSpot(Pos spot, Game *game) {
     static char *reps = REPS;
     attron(COLOR_PAIR(COLOR(spot.file,spot.rank)));
-    mvprintw(7-spot.rank, 3*spot.file, " %c ", reps[value(spot, game)]);
+    mvprintw(8-spot.rank, 3*(1+spot.file), " %c ", reps[value(spot, game)]);
     attroff(COLOR_PAIR(COLOR(spot.file,spot.rank)));
 }
 
 void printCap(char color, char row, char spot, Game *game) {
     static char *reps = REPS;
-    mvprintw(spot, (color ? 25 : 32)+3*row, " %c ", reps[capval(color, row, spot, game)]);
+    mvprintw(1+spot, (color ? 31 : 36)+3*row, " %c ", reps[capval(color, row, spot, game)]);
+}
+
+void printBorder() {
+    char i;
+    for(i = 0; i < 8; ++i) {
+        mvprintw(0, 3*i+4, "%c", 97+i);
+        mvprintw(9, 3*i+4, "%c", 97+i);
+        mvprintw(i+1, 1, "%d", 8-i);
+        mvprintw(i+1, 28, "%d", 8-i);
+    }
+    mvprintw(0, 30, "Capture Zone");
 }
 
 void printBoard(Game *game) {
     Pos iter;
-    move(8, 0);
+    move(10, 0);
     clrtobot();
     for(iter.rank = 0; iter.rank >= 0; ++iter.rank) {
         for(iter.file = 0; iter.file >= 0; ++iter.file) {
@@ -78,7 +92,6 @@ void printBoard(Game *game) {
         printCap(1, 0, iter.rank, game);
         printCap(1, 1, iter.rank, game);
     }
-    mvprintw(8, 0, "%X %X", game->info.castle, game->info.color);
 }
 
 void displayMoves(Move *move) {
@@ -88,7 +101,7 @@ void displayMoves(Move *move) {
         return;
     }
     for(iter = move; iter->next; iter = iter->next) {
-        mvchgat(7-iter->dst.rank, 3*iter->dst.file, 3, A_REVERSE, 3, NULL);
+        mvchgat(8-iter->dst.rank, 3*(1+iter->dst.file), 3, A_REVERSE, 3, NULL);
     }
 }
 
@@ -100,9 +113,9 @@ void user(Game *game) {
     static Pos pos;
     static char cursX = 0;
     static char cursY = 0;
-    mvchgat(cursY, 3*cursX, 3, A_REVERSE, 3, NULL);
+    mvchgat(1+cursY, 3*(1+cursX), 3, A_REVERSE, 3, NULL);
     for(ch = getch(); ch != 'q'; ch = getch()) {
-        mvchgat(cursY, 3*cursX, 3, A_NORMAL, COLOR(7-cursY,cursX), NULL);
+        mvchgat(1+cursY, 3*(1+cursX), 3, A_NORMAL, COLOR(7-cursY,cursX), NULL);
         switch(ch) {
             case 'k':
                 cursY = (cursY + 7) % 8;
@@ -135,27 +148,27 @@ void user(Game *game) {
                 }
                 switch(ret) {
                     case TURN:
-                        mvprintw(9, 0, "It's not your turn.");
+                        mvprintw(MSG, 0, "It's not your turn.");
                         break;
                     case INVALID:
-                        mvprintw(9, 0, "That piece can't move like that.");
+                        mvprintw(MSG, 0, "That piece can't move like that.");
                         break;
                     case THREAT:
-                        mvprintw(9, 0, "That would leave your king in check.");
+                        mvprintw(MSG, 0, "That would leave your king in check.");
                         break;
                     case CHECK:
-                        mvprintw(9, 0, "Check!");
+                        mvprintw(MSG, 0, "Check!");
                         break;
                     case STALE:
-                        mvprintw(9, 0, "Stalemate!");
+                        mvprintw(MSG, 0, "Stalemate!");
                         break;
                     case MATE:
-                        mvprintw(9, 0, "Checkmate!");
+                        mvprintw(MSG, 0, "Checkmate!");
                         break;
                 }
                 clrtoeol;
                 break;
         }
-        mvchgat(cursY, 3*cursX, 3, A_REVERSE, 3, NULL);
+        mvchgat(1+cursY, 3*(1+cursX), 3, A_REVERSE, 3, NULL);
     }
 }
