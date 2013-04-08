@@ -1,0 +1,7 @@
+Make with 'make' for hjkl movement.
+ - 's' selects (s)ource square.
+ - 'd' selects (d)estination square.
+ - 'v' gets (v)alid moves.
+Make with 'make wasd' for wasd movement.
+ - Spacebar to select source and destination squares
+ - 'v' still gets (v)alid moves.
